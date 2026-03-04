@@ -34,6 +34,9 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
     /** @var string */
     public $live_secret_key = '';
 
+    /** @var string */
+    public $webhook_signing_secret = '';
+
     public function __construct()
     {
         $this->id                 = 'stancer';
@@ -56,13 +59,17 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $this->test_secret_key = (string) $this->get_option('test_secret_key', '');
         $this->live_public_key = (string) $this->get_option('live_public_key', '');
         $this->live_secret_key = (string) $this->get_option('live_secret_key', '');
+        $this->webhook_signing_secret = (string) $this->get_option('webhook_signing_secret', '');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
         add_action('woocommerce_api_wc_gateway_stancer', [$this, 'handle_return_callback']);
+        add_action('woocommerce_api_wc_gateway_stancer_webhook', [$this, 'handle_webhook_callback']);
     }
 
     public function init_form_fields(): void
     {
+        $webhook_url = WC()->api_request_url('wc_gateway_stancer_webhook');
+
         $this->form_fields = [
             'enabled' => [
                 'title'   => __('Enable/Disable', 'woocommerce-stancer-gateway'),
@@ -113,6 +120,21 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                 'type'        => 'password',
                 'description' => __('Your Stancer live secret key.', 'woocommerce-stancer-gateway'),
                 'default'     => '',
+            ],
+            'webhook_signing_secret' => [
+                'title'       => __('Webhook signing secret', 'woocommerce-stancer-gateway'),
+                'type'        => 'password',
+                'description' => __('Secret used to verify Stancer webhook signatures (recommended).', 'woocommerce-stancer-gateway'),
+                'default'     => '',
+            ],
+            'webhook_url_info' => [
+                'title'       => __('Webhook URL', 'woocommerce-stancer-gateway'),
+                'type'        => 'title',
+                'description' => sprintf(
+                    /* translators: %s: webhook URL */
+                    __('Set this URL in your Stancer dashboard webhook configuration: %s', 'woocommerce-stancer-gateway'),
+                    '<code>' . esc_html($webhook_url) . '</code>'
+                ),
             ],
         ];
     }
@@ -293,6 +315,90 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         exit;
     }
 
+    public function handle_webhook_callback(): void
+    {
+        if (strtoupper((string) $_SERVER['REQUEST_METHOD']) !== 'POST') {
+            status_header(405);
+            echo wp_json_encode(['message' => 'Method Not Allowed']);
+            exit;
+        }
+
+        $raw_body = file_get_contents('php://input');
+        $payload  = json_decode((string) $raw_body, true);
+
+        if (! is_array($payload)) {
+            status_header(400);
+            echo wp_json_encode(['message' => 'Invalid JSON payload']);
+            exit;
+        }
+
+        if (! $this->is_valid_webhook_signature((string) $raw_body)) {
+            status_header(401);
+            echo wp_json_encode(['message' => 'Invalid webhook signature']);
+            exit;
+        }
+
+        $intent_id = $this->extract_intent_id_from_payload($payload);
+        $order_id  = $this->extract_order_id_from_payload($payload);
+        $order     = null;
+
+        if ($order_id > 0) {
+            $order = wc_get_order($order_id);
+        }
+
+        if (! $order instanceof WC_Order && $intent_id !== '') {
+            $order = $this->find_order_by_intent_id($intent_id);
+        }
+
+        if (! $order instanceof WC_Order) {
+            status_header(202);
+            echo wp_json_encode(['message' => 'Webhook accepted but order was not found']);
+            exit;
+        }
+
+        if ($intent_id === '') {
+            $intent_id = (string) $order->get_meta('_stancer_payment_intent_id', true);
+        }
+
+        if ($intent_id === '') {
+            status_header(202);
+            echo wp_json_encode(['message' => 'Webhook accepted but payment intent was not found']);
+            exit;
+        }
+
+        $mode   = (string) $order->get_meta('_stancer_mode', true);
+        $secret = $this->get_secret_key_for_mode($mode);
+
+        if ($secret === '') {
+            status_header(500);
+            echo wp_json_encode(['message' => 'Gateway API key is missing']);
+            exit;
+        }
+
+        $client = new WC_Stancer_Api_Client($secret);
+        $intent = $client->get_payment_intent($intent_id);
+
+        if (is_wp_error($intent)) {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: error message */
+                    __('Webhook error while fetching Stancer payment intent: %s', 'woocommerce-stancer-gateway'),
+                    $intent->get_error_message()
+                )
+            );
+            status_header(502);
+            echo wp_json_encode(['message' => 'Unable to fetch payment intent']);
+            exit;
+        }
+
+        $status = isset($intent['status']) ? sanitize_key((string) $intent['status']) : '';
+        $this->sync_order_status_from_intent($order, $status, $intent_id);
+
+        status_header(200);
+        echo wp_json_encode(['message' => 'Webhook processed']);
+        exit;
+    }
+
     private function build_return_callback_url(WC_Order $order): string
     {
         $base_url = WC()->api_request_url('wc_gateway_stancer');
@@ -313,6 +419,134 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         }
 
         return $this->test_secret_key;
+    }
+
+    private function extract_intent_id_from_payload(array $payload): string
+    {
+        $candidates = [
+            $payload['id'] ?? '',
+            $payload['payment_intent'] ?? '',
+            $payload['paymentIntent'] ?? '',
+            $payload['data']['id'] ?? '',
+            $payload['data']['payment_intent'] ?? '',
+            $payload['data']['paymentIntent'] ?? '',
+            $payload['object']['id'] ?? '',
+            $payload['object']['payment_intent'] ?? '',
+            $payload['object']['paymentIntent'] ?? '',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+
+            $candidate = trim($candidate);
+
+            if (preg_match('/^pi_[a-zA-Z0-9]{24}$/', $candidate) === 1) {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    private function extract_order_id_from_payload(array $payload): int
+    {
+        $candidates = [
+            $payload['order_id'] ?? 0,
+            $payload['orderId'] ?? 0,
+            $payload['metadata']['wc_order_id'] ?? 0,
+            $payload['data']['order_id'] ?? 0,
+            $payload['data']['orderId'] ?? 0,
+            $payload['data']['metadata']['wc_order_id'] ?? 0,
+            $payload['object']['order_id'] ?? 0,
+            $payload['object']['orderId'] ?? 0,
+            $payload['object']['metadata']['wc_order_id'] ?? 0,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $order_id = absint($candidate);
+
+            if ($order_id > 0) {
+                return $order_id;
+            }
+        }
+
+        return 0;
+    }
+
+    private function find_order_by_intent_id(string $intent_id)
+    {
+        $orders = wc_get_orders(
+            [
+                'limit'      => 1,
+                'return'     => 'objects',
+                'meta_key'   => '_stancer_payment_intent_id',
+                'meta_value' => $intent_id,
+            ]
+        );
+
+        if (empty($orders) || ! $orders[0] instanceof WC_Order) {
+            return null;
+        }
+
+        return $orders[0];
+    }
+
+    private function is_valid_webhook_signature(string $raw_body): bool
+    {
+        $secret = trim($this->webhook_signing_secret);
+
+        if ($secret === '') {
+            return true;
+        }
+
+        $signature_header = $this->get_request_header('X-Stancer-Signature');
+
+        if ($signature_header === '') {
+            $signature_header = $this->get_request_header('Stancer-Signature');
+        }
+
+        if ($signature_header === '') {
+            return false;
+        }
+
+        $computed  = hash_hmac('sha256', $raw_body, $secret);
+        $signatures = [];
+
+        foreach (explode(',', $signature_header) as $part) {
+            $part = trim($part);
+
+            if ($part === '') {
+                continue;
+            }
+
+            if (strpos($part, '=') !== false) {
+                $values = explode('=', $part, 2);
+                $part   = trim((string) $values[1]);
+            }
+
+            $signatures[] = strtolower($part);
+        }
+
+        foreach ($signatures as $signature) {
+            if (hash_equals($computed, $signature)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function get_request_header(string $name): string
+    {
+        $server_key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+
+        if (isset($_SERVER[$server_key])) {
+            return sanitize_text_field(wp_unslash($_SERVER[$server_key]));
+        }
+
+        return '';
     }
 
     private function sync_order_status_from_intent(WC_Order $order, string $status, string $intent_id): void
