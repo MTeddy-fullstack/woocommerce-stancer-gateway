@@ -46,6 +46,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $this->method_description = __('Accept card payments through Stancer.', 'woocommerce-stancer-gateway');
         $this->supports           = [
             'products',
+            'refunds',
         ];
 
         $this->init_form_fields();
@@ -223,10 +224,108 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
 
     public function process_refund($order_id, $amount = null, $reason = '')
     {
-        return new WP_Error(
-            'stancer_refund_not_implemented',
-            __('Refunds are not implemented yet.', 'woocommerce-stancer-gateway')
+        $order = wc_get_order($order_id);
+
+        if (! $order instanceof WC_Order) {
+            return new WP_Error(
+                'stancer_refund_order_not_found',
+                __('Order not found for refund.', 'woocommerce-stancer-gateway')
+            );
+        }
+
+        $intent_id = (string) $order->get_meta('_stancer_payment_intent_id', true);
+
+        if ($intent_id === '') {
+            return new WP_Error(
+                'stancer_refund_missing_intent',
+                __('Stancer payment intent ID is missing for this order.', 'woocommerce-stancer-gateway')
+            );
+        }
+
+        $mode   = (string) $order->get_meta('_stancer_mode', true);
+        $secret = $this->get_secret_key_for_mode($mode);
+
+        if ($secret === '') {
+            return new WP_Error(
+                'stancer_refund_missing_key',
+                __('Stancer API key is missing for the order mode.', 'woocommerce-stancer-gateway')
+            );
+        }
+
+        $payload = [];
+
+        if ($amount !== null) {
+            $minor_amount = $this->to_minor_units((float) $amount);
+
+            if ($minor_amount <= 0) {
+                return new WP_Error(
+                    'stancer_refund_invalid_amount',
+                    __('Refund amount must be greater than zero.', 'woocommerce-stancer-gateway')
+                );
+            }
+
+            $payload['amount'] = $minor_amount;
+        }
+
+        $client = new WC_Stancer_Api_Client($secret);
+        $refund = $client->refund_payment_intent($intent_id, $payload);
+
+        if (is_wp_error($refund)) {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: error message */
+                    __('Stancer refund failed: %s', 'woocommerce-stancer-gateway'),
+                    $refund->get_error_message()
+                )
+            );
+
+            return new WP_Error(
+                'stancer_refund_failed',
+                __('Stancer refund request failed.', 'woocommerce-stancer-gateway'),
+                $refund->get_error_data()
+            );
+        }
+
+        $refund_id     = isset($refund['id']) ? sanitize_text_field((string) $refund['id']) : '';
+        $refund_status = isset($refund['status']) ? sanitize_key((string) $refund['status']) : 'unknown';
+        $refund_amount = isset($refund['amount']) ? (int) $refund['amount'] : 0;
+
+        if ($refund_id === '') {
+            return new WP_Error(
+                'stancer_refund_invalid_response',
+                __('Stancer refund response is missing an ID.', 'woocommerce-stancer-gateway')
+            );
+        }
+
+        $existing_ids = $order->get_meta('_stancer_refund_ids', true);
+        $existing_ids = is_array($existing_ids) ? $existing_ids : [];
+        $existing_ids[] = $refund_id;
+        $existing_ids = array_values(array_unique($existing_ids));
+
+        $order->update_meta_data('_stancer_refund_ids', $existing_ids);
+        $order->save();
+
+        $order->add_order_note(
+            sprintf(
+                /* translators: 1: refund id 2: refund status 3: amount in minor units */
+                __('Stancer refund created. ID: %1$s, status: %2$s, amount: %3$d (minor units).', 'woocommerce-stancer-gateway'),
+                $refund_id,
+                $refund_status,
+                $refund_amount
+            )
         );
+
+        if (is_string($reason) && $reason !== '') {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: refund reason */
+                    __('WooCommerce refund reason: %s', 'woocommerce-stancer-gateway'),
+                    sanitize_text_field($reason)
+                )
+            );
+        }
+
+        return true;
     }
 
     public function is_test_mode_enabled(): bool
@@ -419,6 +518,13 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         }
 
         return $this->test_secret_key;
+    }
+
+    private function to_minor_units(float $amount): int
+    {
+        $precision = (int) wc_get_price_decimals();
+
+        return (int) round($amount * (10 ** $precision));
     }
 
     private function extract_intent_id_from_payload(array $payload): string
