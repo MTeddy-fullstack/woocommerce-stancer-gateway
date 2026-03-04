@@ -1,4 +1,4 @@
-﻿# WooCommerce Stancer Gateway
+# WooCommerce Stancer Gateway
 
 WooCommerce Stancer Gateway adds Stancer as a payment method in WooCommerce.
 

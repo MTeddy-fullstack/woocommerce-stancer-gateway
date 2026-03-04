@@ -1,4 +1,4 @@
-﻿=== WooCommerce Stancer Gateway ===
+=== WooCommerce Stancer Gateway ===
 Contributors: your-name
 Tags: woocommerce, payment, gateway, stancer
 Requires at least: 6.2

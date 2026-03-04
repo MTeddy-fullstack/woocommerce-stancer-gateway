@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Plugin Name: WooCommerce Stancer Gateway
  * Plugin URI: https://github.com/your-org/woocommerce-stancer-gateway
