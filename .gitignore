@@ -1,0 +1,9 @@
+﻿/vendor/
+/node_modules/
+/.phpunit.result.cache
+/phpstan.neon.tmp
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.log
