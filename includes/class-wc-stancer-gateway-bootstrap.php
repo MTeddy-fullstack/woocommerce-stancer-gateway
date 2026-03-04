@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 if (! defined('ABSPATH')) {
     exit;
@@ -20,9 +20,13 @@ class WC_Stancer_Gateway_Bootstrap
             return;
         }
 
+        require_once WC_STANCER_GATEWAY_PLUGIN_DIR . 'includes/class-wc-stancer-api-client.php';
+        require_once WC_STANCER_GATEWAY_PLUGIN_DIR . 'includes/class-wc-stancer-logger.php';
+        require_once WC_STANCER_GATEWAY_PLUGIN_DIR . 'includes/class-wc-stancer-admin-logs-page.php';
         require_once WC_STANCER_GATEWAY_PLUGIN_DIR . 'includes/class-wc-gateway-stancer.php';
 
         add_filter('woocommerce_payment_gateways', [__CLASS__, 'register_gateway']);
+        WC_Stancer_Admin_Logs_Page::init();
     }
 
     public static function register_gateway(array $gateways): array

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0"?>
+<?xml version="1.0"?>
 <ruleset name="WooCommerce Stancer Gateway">
     <description>PHPCS rules for WooCommerce Stancer Gateway.</description>
 
@@ -9,9 +9,7 @@
     <arg name="basepath" value="."/>
     <arg name="colors"/>
 
-    <rule ref="WordPress-Extra"/>
-    <rule ref="WordPress-Docs"/>
-    <rule ref="PHPCompatibilityWP">
+    <rule ref="PHPCompatibility">
         <properties>
             <property name="testVersion" value="8.1-"/>
         </properties>

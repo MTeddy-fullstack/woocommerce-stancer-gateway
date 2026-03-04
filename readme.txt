@@ -1,4 +1,4 @@
-﻿=== WooCommerce Stancer Gateway ===
+=== WooCommerce Stancer Gateway ===
 Contributors: your-name
 Tags: woocommerce, payment, gateway, stancer
 Requires at least: 6.2
@@ -24,3 +24,9 @@ WooCommerce Stancer Gateway provides a Stancer integration for WooCommerce store
 
 = 0.1.0 =
 * Initial project bootstrap.
+* Added Stancer return callback and webhook handling.
+* Added WooCommerce refund integration through Stancer payment intents.
+* Added admin logs page under WooCommerce.
+* Hardened webhook security (live secret policy, timestamp signature validation, replay protection).
+* Added redirect URL host allowlist for payment page redirections.
+* Added sanitized/masked logging for payment identifiers.
