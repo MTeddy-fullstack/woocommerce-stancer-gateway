@@ -98,7 +98,22 @@ if (Test-Path $zipPath) {
     Remove-Item -Path $zipPath -Force
 }
 
-Compress-Archive -Path (Join-Path $stagingRoot $pluginSlug) -DestinationPath $zipPath -CompressionLevel Optimal
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$zipArchive = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    $files = Get-ChildItem -Path $stagingRoot -Recurse -File
+    foreach ($file in $files) {
+        $relativePath = $file.FullName.Substring($stagingRoot.Length + 1)
+        $entryPath = $relativePath -replace '\\', '/'
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zipArchive, $file.FullName, $entryPath, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+}
+finally {
+    $zipArchive.Dispose()
+}
+
 Remove-Item -Path $stagingRoot -Recurse -Force
 
 Write-Host "Package created: $zipPath"
