@@ -40,6 +40,9 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
     /** @var string */
     public $webhook_signing_secret = '';
 
+    /** @var string */
+    public $checkout_flow = 'redirect';
+
     public function __construct()
     {
         $this->id                 = 'stancer';
@@ -64,11 +67,13 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $this->live_public_key = (string) $this->get_option('live_public_key', '');
         $this->live_secret_key = (string) $this->get_option('live_secret_key', '');
         $this->webhook_signing_secret = (string) $this->get_option('webhook_signing_secret', '');
+        $this->checkout_flow = (string) $this->get_option('checkout_flow', 'redirect');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
         add_action('woocommerce_api_wc_gateway_stancer', [$this, 'handle_return_callback']);
         add_action('woocommerce_api_wc_gateway_stancer_webhook', [$this, 'handle_webhook_callback']);
         add_action('admin_notices', [$this, 'maybe_display_security_notice']);
+        add_action('woocommerce_receipt_' . $this->id, [$this, 'receipt_page']);
     }
 
     public function init_form_fields(): void
@@ -95,6 +100,16 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                 'description' => __('Payment method description shown to customers at checkout.', 'woocommerce-stancer-gateway'),
                 'default'     => __('Pay securely by credit card.', 'woocommerce-stancer-gateway'),
                 'desc_tip'    => true,
+            ],
+            'checkout_flow' => [
+                'title'       => __('Checkout flow', 'woocommerce-stancer-gateway'),
+                'type'        => 'select',
+                'description' => __('Choose how customers complete payment: full redirection or inline embedded form.', 'woocommerce-stancer-gateway'),
+                'default'     => 'redirect',
+                'options'     => [
+                    'redirect' => __('Redirect to Stancer page', 'woocommerce-stancer-gateway'),
+                    'inline'   => __('Inline embedded form', 'woocommerce-stancer-gateway'),
+                ],
             ],
             'test_mode' => [
                 'title'   => __('Test mode', 'woocommerce-stancer-gateway'),
@@ -151,6 +166,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $this->init_settings();
         $this->enabled                = (string) $this->get_option('enabled', 'no');
         $this->test_mode              = (string) $this->get_option('test_mode', 'yes');
+        $this->checkout_flow          = (string) $this->get_option('checkout_flow', 'redirect');
         $this->test_secret_key        = trim((string) $this->get_option('test_secret_key', ''));
         $this->live_secret_key        = trim((string) $this->get_option('live_secret_key', ''));
         $this->webhook_signing_secret = trim((string) $this->get_option('webhook_signing_secret', ''));
@@ -305,8 +321,52 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
 
         return [
             'result'   => 'success',
-            'redirect' => $redirect_url,
+            'redirect' => $this->is_inline_mode_enabled() ? $order->get_checkout_payment_url(true) : $redirect_url,
         ];
+    }
+
+    public function receipt_page($order_id): void
+    {
+        if (! $this->is_inline_mode_enabled()) {
+            echo '<p>' . esc_html__('Redirecting to payment provider...', 'woocommerce-stancer-gateway') . '</p>';
+
+            return;
+        }
+
+        $order = wc_get_order($order_id);
+
+        if (! $order instanceof WC_Order) {
+            echo '<p>' . esc_html__('Unable to load order for payment.', 'woocommerce-stancer-gateway') . '</p>';
+
+            return;
+        }
+
+        $intent_url = (string) $order->get_meta('_stancer_payment_intent_url', true);
+        $intent_id  = (string) $order->get_meta('_stancer_payment_intent_id', true);
+
+        if ($intent_url === '' || ! $this->is_allowed_redirect_url($intent_url)) {
+            echo '<p>' . esc_html__('Payment form is unavailable. Please retry checkout.', 'woocommerce-stancer-gateway') . '</p>';
+
+            return;
+        }
+
+        WC_Stancer_Logger::log(
+            'info',
+            'Rendering inline Stancer payment form.',
+            [
+                'order_id'  => (int) $order->get_id(),
+                'intent_id' => $intent_id,
+                'mode'      => $this->is_test_mode_enabled() ? 'test' : 'live',
+            ]
+        );
+
+        echo '<div class="wc-stancer-inline-wrapper" style="display:block;max-width:720px;">';
+        echo '<p>' . esc_html__('Complete your payment securely below.', 'woocommerce-stancer-gateway') . '</p>';
+        echo '<iframe src="' . esc_url($intent_url) . '" title="' . esc_attr__('Stancer payment form', 'woocommerce-stancer-gateway') . '" style="width:100%;min-height:780px;border:1px solid #ddd;border-radius:8px;background:#fff;" loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+        echo '<p style="margin-top:12px;">';
+        echo '<a class="button alt" href="' . esc_url($intent_url) . '" target="_blank" rel="noopener noreferrer">' . esc_html__('Open payment in a new tab', 'woocommerce-stancer-gateway') . '</a>';
+        echo '</p>';
+        echo '</div>';
     }
 
     public function process_refund($order_id, $amount = null, $reason = '')
@@ -695,6 +755,11 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
     private function is_enabled(): bool
     {
         return $this->enabled === 'yes';
+    }
+
+    private function is_inline_mode_enabled(): bool
+    {
+        return $this->checkout_flow === 'inline';
     }
 
     private function is_live_mode(): bool

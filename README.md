@@ -44,6 +44,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
 
 - Webhook endpoint: `?wc-api=wc_gateway_stancer_webhook`
 - Admin logs page: `WooCommerce > Stancer Logs`
+- Checkout flow options in gateway settings:
+  - `Redirect to Stancer page`
+  - `Inline embedded form` (iframe on WooCommerce pay page)
 
 ## Security defaults
 
