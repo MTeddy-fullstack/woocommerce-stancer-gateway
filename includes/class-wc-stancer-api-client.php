@@ -20,6 +20,11 @@ class WC_Stancer_Api_Client
         return $this->request('POST', '/payments', $payload);
     }
 
+    public function create_payment_intent(array $payload)
+    {
+        return $this->request('POST', '/v2/payment_intents/', $payload);
+    }
+
     private function request(string $method, string $endpoint, array $payload = [])
     {
         $args = [
