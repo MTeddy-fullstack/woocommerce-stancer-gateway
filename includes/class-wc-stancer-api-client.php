@@ -25,6 +25,11 @@ class WC_Stancer_Api_Client
         return $this->request('POST', '/v2/payment_intents/', $payload);
     }
 
+    public function get_payment_intent(string $intent_id)
+    {
+        return $this->request('GET', '/v2/payment_intents/' . rawurlencode($intent_id));
+    }
+
     private function request(string $method, string $endpoint, array $payload = [])
     {
         $args = [

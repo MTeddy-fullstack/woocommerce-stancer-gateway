@@ -58,6 +58,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $this->live_secret_key = (string) $this->get_option('live_secret_key', '');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
+        add_action('woocommerce_api_wc_gateway_stancer', [$this, 'handle_return_callback']);
     }
 
     public function init_form_fields(): void
@@ -177,6 +178,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
 
         $order->update_meta_data('_stancer_payment_intent_id', $intent_id);
         $order->update_meta_data('_stancer_payment_intent_url', $redirect_url);
+        $order->update_meta_data('_stancer_mode', $this->is_test_mode_enabled() ? 'test' : 'live');
         $order->save();
 
         $order->update_status(
@@ -238,7 +240,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
             'description'     => substr($description, 0, 64),
             'order_id'        => (string) $order->get_id(),
             'methods_allowed' => ['card'],
-            'return_url'      => $this->get_return_url($order),
+            'return_url'      => $this->build_return_callback_url($order),
             'metadata'        => [
                 'wc_order_id'     => (string) $order->get_id(),
                 'wc_order_number' => (string) $order->get_order_number(),
@@ -246,5 +248,141 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
             ],
             'capture'         => true,
         ];
+    }
+
+    public function handle_return_callback(): void
+    {
+        $order_id  = isset($_GET['order_id']) ? absint(wp_unslash($_GET['order_id'])) : 0;
+        $order_key = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
+
+        if ($order_id <= 0 || $order_key === '') {
+            wp_safe_redirect(wc_get_checkout_url());
+            exit;
+        }
+
+        $order = wc_get_order($order_id);
+
+        if (! $order instanceof WC_Order || $order->get_order_key() !== $order_key) {
+            wp_safe_redirect(wc_get_checkout_url());
+            exit;
+        }
+
+        $intent_id = (string) $order->get_meta('_stancer_payment_intent_id', true);
+        $mode      = (string) $order->get_meta('_stancer_mode', true);
+        $secret    = $this->get_secret_key_for_mode($mode);
+
+        if ($intent_id !== '' && $secret !== '') {
+            $client = new WC_Stancer_Api_Client($secret);
+            $intent = $client->get_payment_intent($intent_id);
+
+            if (! is_wp_error($intent)) {
+                $status = isset($intent['status']) ? sanitize_key((string) $intent['status']) : '';
+                $this->sync_order_status_from_intent($order, $status, $intent_id);
+            } else {
+                $order->add_order_note(
+                    sprintf(
+                        /* translators: %s: error message */
+                        __('Unable to fetch Stancer payment status: %s', 'woocommerce-stancer-gateway'),
+                        $intent->get_error_message()
+                    )
+                );
+            }
+        }
+
+        wp_safe_redirect($this->get_return_url($order));
+        exit;
+    }
+
+    private function build_return_callback_url(WC_Order $order): string
+    {
+        $base_url = WC()->api_request_url('wc_gateway_stancer');
+
+        return add_query_arg(
+            [
+                'order_id' => $order->get_id(),
+                'key'      => $order->get_order_key(),
+            ],
+            $base_url
+        );
+    }
+
+    private function get_secret_key_for_mode(string $mode): string
+    {
+        if ($mode === 'live') {
+            return $this->live_secret_key;
+        }
+
+        return $this->test_secret_key;
+    }
+
+    private function sync_order_status_from_intent(WC_Order $order, string $status, string $intent_id): void
+    {
+        if ($status === 'captured') {
+            if (! $order->is_paid()) {
+                $order->payment_complete($intent_id);
+            }
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: payment intent id */
+                    __('Stancer payment captured successfully. Intent: %s', 'woocommerce-stancer-gateway'),
+                    $intent_id
+                )
+            );
+
+            return;
+        }
+
+        if ($status === 'authorized' || $status === 'processing') {
+            $order->update_status(
+                'on-hold',
+                sprintf(
+                    /* translators: 1: payment status 2: payment intent id */
+                    __('Stancer payment status: %1$s. Intent: %2$s', 'woocommerce-stancer-gateway'),
+                    $status,
+                    $intent_id
+                )
+            );
+
+            return;
+        }
+
+        if ($status === 'canceled') {
+            $order->update_status(
+                'cancelled',
+                sprintf(
+                    /* translators: %s: payment intent id */
+                    __('Stancer payment was canceled. Intent: %s', 'woocommerce-stancer-gateway'),
+                    $intent_id
+                )
+            );
+            wc_maybe_increase_stock_levels($order->get_id());
+
+            return;
+        }
+
+        if ($status === 'unpaid') {
+            $order->update_status(
+                'failed',
+                sprintf(
+                    /* translators: %s: payment intent id */
+                    __('Stancer payment failed. Intent: %s', 'woocommerce-stancer-gateway'),
+                    $intent_id
+                )
+            );
+            wc_maybe_increase_stock_levels($order->get_id());
+
+            return;
+        }
+
+        if ($status === 'require_payment_method' || $status === 'require_authentication' || $status === 'require_authorization') {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: 1: payment status 2: payment intent id */
+                    __('Stancer payment requires customer action (%1$s). Intent: %2$s', 'woocommerce-stancer-gateway'),
+                    $status,
+                    $intent_id
+                )
+            );
+        }
     }
 }
