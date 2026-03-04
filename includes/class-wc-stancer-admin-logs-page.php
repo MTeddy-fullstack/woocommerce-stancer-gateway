@@ -34,11 +34,11 @@ class WC_Stancer_Admin_Logs_Page
             echo '<div class="notice notice-success"><p>' . esc_html__('Stancer logs have been cleared.', 'woocommerce-stancer-gateway') . '</p></div>';
         }
 
-        $events = WC_Stancer_Logger::get_events(200);
+        $events = WC_Stancer_Logger::get_events(100);
 
         echo '<div class="wrap">';
         echo '<h1>' . esc_html__('Stancer Logs', 'woocommerce-stancer-gateway') . '</h1>';
-        echo '<p>' . esc_html__('Recent Stancer gateway events recorded by this plugin.', 'woocommerce-stancer-gateway') . '</p>';
+        echo '<p>' . esc_html__('Recent Stancer gateway events recorded by this plugin. Sensitive identifiers are partially masked.', 'woocommerce-stancer-gateway') . '</p>';
         echo '<form method="post" style="margin-bottom: 1rem;">';
         wp_nonce_field('wc_stancer_clear_logs_action');
         submit_button(__('Clear logs', 'woocommerce-stancer-gateway'), 'delete', 'wc_stancer_clear_logs', false);
