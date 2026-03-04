@@ -145,12 +145,23 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $order = wc_get_order($order_id);
 
         if (! $order instanceof WC_Order) {
+            WC_Stancer_Logger::log('error', 'Payment initialization failed: order not found.', ['order_id' => (int) $order_id]);
             wc_add_notice(__('Unable to process payment for this order.', 'woocommerce-stancer-gateway'), 'error');
 
             return ['result' => 'failure'];
         }
 
+        WC_Stancer_Logger::log(
+            'info',
+            'Starting Stancer payment initialization.',
+            [
+                'order_id' => (int) $order->get_id(),
+                'mode'     => $this->is_test_mode_enabled() ? 'test' : 'live',
+            ]
+        );
+
         if (! $this->is_available()) {
+            WC_Stancer_Logger::log('warning', 'Payment initialization blocked: gateway not available.', ['order_id' => (int) $order->get_id()]);
             wc_add_notice(__('Stancer payment method is not available for this order.', 'woocommerce-stancer-gateway'), 'error');
 
             return ['result' => 'failure'];
@@ -159,6 +170,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $secret_key = $this->is_test_mode_enabled() ? $this->test_secret_key : $this->live_secret_key;
 
         if ($secret_key === '') {
+            WC_Stancer_Logger::log('error', 'Payment initialization failed: missing API key.', ['order_id' => (int) $order->get_id()]);
             wc_add_notice(__('Stancer API key is missing. Please contact the store administrator.', 'woocommerce-stancer-gateway'), 'error');
 
             return ['result' => 'failure'];
@@ -167,6 +179,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $currency = strtoupper((string) $order->get_currency());
 
         if (! in_array($currency, self::SUPPORTED_CURRENCIES, true)) {
+            WC_Stancer_Logger::log('warning', 'Payment initialization failed: unsupported currency.', ['order_id' => (int) $order->get_id(), 'currency' => $currency]);
             wc_add_notice(__('Stancer does not support this order currency.', 'woocommerce-stancer-gateway'), 'error');
 
             return ['result' => 'failure'];
@@ -177,6 +190,14 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $result  = $client->create_payment_intent($payload);
 
         if (is_wp_error($result)) {
+            WC_Stancer_Logger::log(
+                'error',
+                'Payment intent creation failed.',
+                [
+                    'order_id' => (int) $order->get_id(),
+                    'error'    => $result->get_error_message(),
+                ]
+            );
             $order->add_order_note(
                 sprintf(
                     /* translators: %s: error message */
@@ -193,6 +214,11 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $intent_id    = isset($result['id']) ? sanitize_text_field((string) $result['id']) : '';
 
         if ($redirect_url === '' || $intent_id === '') {
+            WC_Stancer_Logger::log(
+                'error',
+                'Payment intent creation failed: missing id/url in response.',
+                ['order_id' => (int) $order->get_id()]
+            );
             $order->add_order_note(__('Stancer response was missing required fields (id/url).', 'woocommerce-stancer-gateway'));
             wc_add_notice(__('Payment provider returned an invalid response. Please try again.', 'woocommerce-stancer-gateway'), 'error');
 
@@ -216,6 +242,15 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         wc_maybe_reduce_stock_levels($order_id);
         WC()->cart->empty_cart();
 
+        WC_Stancer_Logger::log(
+            'info',
+            'Payment intent created successfully.',
+            [
+                'order_id'  => (int) $order->get_id(),
+                'intent_id' => $intent_id,
+            ]
+        );
+
         return [
             'result'   => 'success',
             'redirect' => $redirect_url,
@@ -227,15 +262,26 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $order = wc_get_order($order_id);
 
         if (! $order instanceof WC_Order) {
+            WC_Stancer_Logger::log('error', 'Refund failed: order not found.', ['order_id' => (int) $order_id]);
             return new WP_Error(
                 'stancer_refund_order_not_found',
                 __('Order not found for refund.', 'woocommerce-stancer-gateway')
             );
         }
 
+        WC_Stancer_Logger::log(
+            'info',
+            'Starting refund request.',
+            [
+                'order_id' => (int) $order->get_id(),
+                'amount'   => $amount,
+            ]
+        );
+
         $intent_id = (string) $order->get_meta('_stancer_payment_intent_id', true);
 
         if ($intent_id === '') {
+            WC_Stancer_Logger::log('error', 'Refund failed: missing payment intent ID.', ['order_id' => (int) $order->get_id()]);
             return new WP_Error(
                 'stancer_refund_missing_intent',
                 __('Stancer payment intent ID is missing for this order.', 'woocommerce-stancer-gateway')
@@ -246,6 +292,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $secret = $this->get_secret_key_for_mode($mode);
 
         if ($secret === '') {
+            WC_Stancer_Logger::log('error', 'Refund failed: missing API key.', ['order_id' => (int) $order->get_id(), 'mode' => $mode]);
             return new WP_Error(
                 'stancer_refund_missing_key',
                 __('Stancer API key is missing for the order mode.', 'woocommerce-stancer-gateway')
@@ -258,6 +305,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
             $minor_amount = $this->to_minor_units((float) $amount);
 
             if ($minor_amount <= 0) {
+                WC_Stancer_Logger::log('warning', 'Refund rejected: invalid amount.', ['order_id' => (int) $order->get_id(), 'amount' => $amount]);
                 return new WP_Error(
                     'stancer_refund_invalid_amount',
                     __('Refund amount must be greater than zero.', 'woocommerce-stancer-gateway')
@@ -271,6 +319,15 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $refund = $client->refund_payment_intent($intent_id, $payload);
 
         if (is_wp_error($refund)) {
+            WC_Stancer_Logger::log(
+                'error',
+                'Refund API request failed.',
+                [
+                    'order_id'  => (int) $order->get_id(),
+                    'intent_id' => $intent_id,
+                    'error'     => $refund->get_error_message(),
+                ]
+            );
             $order->add_order_note(
                 sprintf(
                     /* translators: %s: error message */
@@ -291,6 +348,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $refund_amount = isset($refund['amount']) ? (int) $refund['amount'] : 0;
 
         if ($refund_id === '') {
+            WC_Stancer_Logger::log('error', 'Refund API response invalid: missing refund ID.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id]);
             return new WP_Error(
                 'stancer_refund_invalid_response',
                 __('Stancer refund response is missing an ID.', 'woocommerce-stancer-gateway')
@@ -324,6 +382,17 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                 )
             );
         }
+
+        WC_Stancer_Logger::log(
+            'info',
+            'Refund request created successfully.',
+            [
+                'order_id'      => (int) $order->get_id(),
+                'intent_id'     => $intent_id,
+                'refund_id'     => $refund_id,
+                'refund_status' => $refund_status,
+            ]
+        );
 
         return true;
     }
@@ -377,6 +446,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $order_key = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
 
         if ($order_id <= 0 || $order_key === '') {
+            WC_Stancer_Logger::log('warning', 'Return callback rejected: missing order parameters.');
             wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
@@ -384,6 +454,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $order = wc_get_order($order_id);
 
         if (! $order instanceof WC_Order || $order->get_order_key() !== $order_key) {
+            WC_Stancer_Logger::log('warning', 'Return callback rejected: order key mismatch.', ['order_id' => $order_id]);
             wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
@@ -399,7 +470,9 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
             if (! is_wp_error($intent)) {
                 $status = isset($intent['status']) ? sanitize_key((string) $intent['status']) : '';
                 $this->sync_order_status_from_intent($order, $status, $intent_id);
+                WC_Stancer_Logger::log('info', 'Return callback synchronized payment status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
             } else {
+                WC_Stancer_Logger::log('error', 'Return callback failed to fetch payment intent.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'error' => $intent->get_error_message()]);
                 $order->add_order_note(
                     sprintf(
                         /* translators: %s: error message */
@@ -417,6 +490,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
     public function handle_webhook_callback(): void
     {
         if (strtoupper((string) $_SERVER['REQUEST_METHOD']) !== 'POST') {
+            WC_Stancer_Logger::log('warning', 'Webhook rejected: invalid HTTP method.', ['method' => (string) ($_SERVER['REQUEST_METHOD'] ?? '')]);
             status_header(405);
             echo wp_json_encode(['message' => 'Method Not Allowed']);
             exit;
@@ -426,12 +500,14 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $payload  = json_decode((string) $raw_body, true);
 
         if (! is_array($payload)) {
+            WC_Stancer_Logger::log('warning', 'Webhook rejected: invalid JSON payload.');
             status_header(400);
             echo wp_json_encode(['message' => 'Invalid JSON payload']);
             exit;
         }
 
         if (! $this->is_valid_webhook_signature((string) $raw_body)) {
+            WC_Stancer_Logger::log('warning', 'Webhook rejected: invalid signature.');
             status_header(401);
             echo wp_json_encode(['message' => 'Invalid webhook signature']);
             exit;
@@ -450,6 +526,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         }
 
         if (! $order instanceof WC_Order) {
+            WC_Stancer_Logger::log('warning', 'Webhook accepted without matching order.', ['intent_id' => $intent_id, 'order_id' => $order_id]);
             status_header(202);
             echo wp_json_encode(['message' => 'Webhook accepted but order was not found']);
             exit;
@@ -460,6 +537,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         }
 
         if ($intent_id === '') {
+            WC_Stancer_Logger::log('warning', 'Webhook accepted but payment intent ID missing on order.', ['order_id' => (int) $order->get_id()]);
             status_header(202);
             echo wp_json_encode(['message' => 'Webhook accepted but payment intent was not found']);
             exit;
@@ -469,6 +547,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $secret = $this->get_secret_key_for_mode($mode);
 
         if ($secret === '') {
+            WC_Stancer_Logger::log('error', 'Webhook processing failed: missing API key.', ['order_id' => (int) $order->get_id(), 'mode' => $mode]);
             status_header(500);
             echo wp_json_encode(['message' => 'Gateway API key is missing']);
             exit;
@@ -478,6 +557,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
         $intent = $client->get_payment_intent($intent_id);
 
         if (is_wp_error($intent)) {
+            WC_Stancer_Logger::log('error', 'Webhook failed while fetching payment intent.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'error' => $intent->get_error_message()]);
             $order->add_order_note(
                 sprintf(
                     /* translators: %s: error message */
@@ -492,6 +572,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
 
         $status = isset($intent['status']) ? sanitize_key((string) $intent['status']) : '';
         $this->sync_order_status_from_intent($order, $status, $intent_id);
+        WC_Stancer_Logger::log('info', 'Webhook synchronized payment status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
 
         status_header(200);
         echo wp_json_encode(['message' => 'Webhook processed']);
@@ -668,6 +749,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                     $intent_id
                 )
             );
+            WC_Stancer_Logger::log('info', 'Order marked as paid from Stancer status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
 
             return;
         }
@@ -682,6 +764,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                     $intent_id
                 )
             );
+            WC_Stancer_Logger::log('info', 'Order moved to on-hold from Stancer status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
 
             return;
         }
@@ -696,6 +779,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                 )
             );
             wc_maybe_increase_stock_levels($order->get_id());
+            WC_Stancer_Logger::log('warning', 'Order cancelled from Stancer status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
 
             return;
         }
@@ -710,6 +794,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                 )
             );
             wc_maybe_increase_stock_levels($order->get_id());
+            WC_Stancer_Logger::log('warning', 'Order marked failed from Stancer status.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
 
             return;
         }
@@ -723,6 +808,7 @@ class WC_Gateway_Stancer extends WC_Payment_Gateway
                     $intent_id
                 )
             );
+            WC_Stancer_Logger::log('notice', 'Payment requires customer action.', ['order_id' => (int) $order->get_id(), 'intent_id' => $intent_id, 'status' => $status]);
         }
     }
 }

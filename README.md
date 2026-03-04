@@ -33,3 +33,8 @@ Run tests:
 ```bash
 composer test
 ```
+
+## Operations
+
+- Webhook endpoint: `?wc-api=wc_gateway_stancer_webhook`
+- Admin logs page: `WooCommerce > Stancer Logs`

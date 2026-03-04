@@ -24,3 +24,6 @@ WooCommerce Stancer Gateway provides a Stancer integration for WooCommerce store
 
 = 0.1.0 =
 * Initial project bootstrap.
+* Added Stancer return callback and webhook handling.
+* Added WooCommerce refund integration through Stancer payment intents.
+* Added admin logs page under WooCommerce.
