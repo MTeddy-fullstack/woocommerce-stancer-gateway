@@ -34,6 +34,12 @@ Run tests:
 composer test
 ```
 
+Create release package (ZIP):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
+```
+
 ## Operations
 
 - Webhook endpoint: `?wc-api=wc_gateway_stancer_webhook`
