@@ -9,8 +9,7 @@
     <arg name="basepath" value="."/>
     <arg name="colors"/>
 
-    <rule ref="WordPress-Extra"/>
-    <rule ref="WordPress-Docs"/>
+    <rule ref="PSR12"/>
     <rule ref="PHPCompatibility">
         <properties>
             <property name="testVersion" value="8.1-"/>
