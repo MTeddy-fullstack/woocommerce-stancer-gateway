@@ -2,5 +2,9 @@ parameters:
     level: 1
     paths:
         - tests
+    bootstrapFiles:
+        - tests/bootstrap.php
+    scanFiles:
+        - includes/class-wc-stancer-logger.php
     excludePaths:
         - vendor
