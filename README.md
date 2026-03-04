@@ -1,4 +1,4 @@
-﻿# WooCommerce Stancer Gateway
+# WooCommerce Stancer Gateway
 
 WooCommerce Stancer Gateway adds Stancer as a payment method in WooCommerce.
 
@@ -33,3 +33,21 @@ Run tests:
 ```bash
 composer test
 ```
+
+## Operations
+
+- Webhook endpoint: `?wc-api=wc_gateway_stancer_webhook`
+- Admin logs page: `WooCommerce > Stancer Logs`
+
+## Security defaults
+
+- In live mode, webhook requests are rejected if no webhook signing secret is configured.
+- Webhook signature validation supports timestamped HMAC and replay protection.
+- Only `https://*.stancer.com` redirect URLs are accepted by default.
+- Gateway logs are sanitized and payment identifiers are partially masked.
+
+## Security filters
+
+- `wc_stancer_require_webhook_secret_live` (default: `true`)
+- `wc_stancer_webhook_ttl_seconds` (default: `300`)
+- `wc_stancer_allowed_redirect_hosts` (default: `['stancer.com']`)

@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "your-org/woocommerce-stancer-gateway",
   "description": "WooCommerce payment gateway for Stancer.",
   "type": "wordpress-plugin",
